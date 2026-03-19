@@ -8,7 +8,7 @@ dependencies = ["wecom-aibot-sdk>=1.0.3"]
 description = "WeCom listener plugin for Orcheo"
 name = "orcheo-plugin-wecom-listener"
 requires-python = ">=3.12"
-version = "0.3.0"
+version = "0.1.0"
 
 [project.entry-points."orcheo.plugins"]
 wecom_listener = "orcheo_plugin_wecom_listener:plugin"
