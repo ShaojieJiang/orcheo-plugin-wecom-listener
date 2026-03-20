@@ -10,13 +10,11 @@ from types import ModuleType
 from uuid import uuid4
 
 import pytest
-
 from orcheo.listeners.compiler import compile_listener_subscriptions
 from orcheo.listeners.models import ListenerSubscription
 from orcheo.listeners.registry import listener_registry
 from orcheo.plugins import load_enabled_plugins, reset_plugin_loader_for_tests
 from orcheo.plugins.manager import PluginManager
-
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 WECOM_PLUGIN_SRC = PACKAGE_ROOT / "src"
@@ -317,6 +315,32 @@ def test_wecom_ws_event_normalization_uses_req_id_when_msg_id_missing() -> None:
     assert payload is not None
     assert payload.event_type == "text"
     assert payload.dedupe_key.endswith("req:callback-002")
+
+
+def test_wecom_ws_event_normalization_ignores_non_mapping_body() -> None:
+    """Frames without a mapping body should be ignored."""
+    wecom_plugin = _load_wecom_plugin_module()
+
+    subscription = ListenerSubscription(
+        workflow_id=uuid4(),
+        workflow_version_id=uuid4(),
+        node_name="wecom_listener",
+        platform="wecom",
+        bot_identity_key="wecom:primary",
+        config={
+            "bot_id": "aib-test-bot",
+            "bot_secret": "test-secret",
+        },
+    )
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "body": "not-a-mapping",
+    }
+
+    payload = wecom_plugin.normalize_wecom_ws_event(subscription, frame)
+
+    assert payload is None
 
 
 @pytest.mark.asyncio()

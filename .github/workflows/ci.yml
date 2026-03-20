@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.cursor/**'
+      - '.cursorrules'
+      - '.cursorignore'
+      - '.devcontainer/**'
+      - '.github/ISSUE_TEMPLATE/**'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.cursor/**'
+      - '.cursorrules'
+      - '.cursorignore'
+      - '.devcontainer/**'
+      - '.github/ISSUE_TEMPLATE/**'
+    types:
+      - opened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Check lint
+        run: uv run make lint
+
+  format:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Check formatting
+        run: uv run make format-check
+
+  coverage:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run unit tests with coverage
+        run: |
+          uv run coverage run -m pytest
+          uv run coverage html --show-contexts --title "Coverage for ${{ github.sha }}"
+          uv run coverage xml
+          uv run diff-cover coverage.xml --html-report index.html
+
+      - name: Store coverage html
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov
+          include-hidden-files: true
+
+      - name: Store diff coverage html
+        uses: actions/upload-artifact@v4
+        with:
+          name: diff-coverage-html
+          path: index.html
+
+      - name: Check coverage
+        run: |
+          uv run coverage report --fail-under 80
+          uv run diff-cover coverage.xml --fail-under 100

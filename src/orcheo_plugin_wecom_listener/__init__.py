@@ -1,6 +1,7 @@
 """WeCom listener plugin using WebSocket long-connection."""
 
 from __future__ import annotations
+
 import asyncio
 import hashlib
 import json
@@ -13,7 +14,7 @@ from contextlib import suppress
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
-from pydantic import Field
+
 from orcheo.listeners.models import (
     ListenerDispatchMessage,
     ListenerDispatchPayload,
@@ -25,7 +26,7 @@ from orcheo.nodes.base import TaskNode
 from orcheo.nodes.listeners import ListenerNode
 from orcheo.nodes.registry import NodeMetadata
 from orcheo.plugins import PluginAPI
-
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
@@ -325,8 +326,6 @@ def normalize_wecom_ws_event(
         return None
 
     body = frame.get("body") or {}
-    if not isinstance(body, Mapping):
-        body = {}
     msg_type = _derive_wecom_ws_message_type(frame, body) or "message"
     from_user = _optional_string(body.get("from", {}).get("user_id")) or "wecom-user"
     chat_id = _optional_string(body.get("chat_id"))
