@@ -6,3 +6,7 @@ dist/
 *.egg-info/
 .eggs/
 .venv/
+.cache/
+.coverage
+coverage.xml
+htmlcov/
