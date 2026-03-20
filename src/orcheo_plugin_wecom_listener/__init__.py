@@ -269,7 +269,8 @@ def _derive_wecom_ws_dedupe_source(
             separators=(",", ":"),
             ensure_ascii=False,
             default=str,
-        ).encode("utf-8")
+        ).encode("utf-8"),
+        usedforsecurity=False,
     ).hexdigest()
     return f"hash:{msg_type}:{frame_hash}"
 
@@ -325,7 +326,8 @@ def normalize_wecom_ws_event(
     if text is None:
         return None
 
-    body = frame.get("body") or {}
+    body = frame.get("body")
+    assert isinstance(body, Mapping)
     msg_type = _derive_wecom_ws_message_type(frame, body) or "message"
     from_user = _optional_string(body.get("from", {}).get("user_id")) or "wecom-user"
     chat_id = _optional_string(body.get("chat_id"))

@@ -507,14 +507,14 @@ name = "cohere"
 version = "5.20.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fastavro", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "httpx", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "pydantic", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "pydantic-core", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "requests", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "tokenizers", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "types-requests", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
+    { name = "fastavro", marker = "sys_platform != 'emscripten'" },
+    { name = "httpx", marker = "sys_platform != 'emscripten'" },
+    { name = "pydantic", marker = "sys_platform != 'emscripten'" },
+    { name = "pydantic-core", marker = "sys_platform != 'emscripten'" },
+    { name = "requests", marker = "sys_platform != 'emscripten'" },
+    { name = "tokenizers", marker = "sys_platform != 'emscripten'" },
+    { name = "types-requests", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/44/0b/96e2b55a0114ed9d69b3154565f54b764e7530735426290b000f467f4c0f/cohere-5.20.7.tar.gz", hash = "sha256:997ed85fabb3a1e4a4c036fdb520382e7bfa670db48eb59a026803b6f7061dbb", size = 184986 }
 wheels = [
@@ -2639,7 +2639,7 @@ wheels = [
 
 [[package]]
 name = "orcheo-plugin-wecom-listener"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "wecom-aibot-sdk" },
@@ -4278,7 +4278,7 @@ name = "tokenizers"
 version = "0.22.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "huggingface-hub", marker = "python_full_version < '3.14' or sys_platform != 'emscripten'" },
+    { name = "huggingface-hub", marker = "sys_platform != 'emscripten'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/73/6f/f80cfef4a312e1fb34baf7d85c72d4411afde10978d4657f8cdd811d3ccc/tokenizers-0.22.2.tar.gz", hash = "sha256:473b83b915e547aa366d1eee11806deaf419e17be16310ac0a14077f1e28f917", size = 372115 }
 wheels = [

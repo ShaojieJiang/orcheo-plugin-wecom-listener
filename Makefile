@@ -16,4 +16,5 @@ format:
 	ruff check . --select F401 --fix
 
 test:
-	$(UV_RUN) pytest -q
+	$(UV_RUN) coverage run -m pytest -q
+	$(UV_RUN) coverage report
