@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType
 from uuid import uuid4
@@ -82,6 +83,19 @@ def _load_wecom_plugin_module() -> ModuleType:
         sys.modules.pop(module_name, None)
         raise
     return module
+
+
+def _build_subscription(
+    *, config: dict[str, object] | None = None
+) -> ListenerSubscription:
+    return ListenerSubscription(
+        workflow_id=uuid4(),
+        workflow_version_id=uuid4(),
+        node_name="wecom_listener",
+        platform="wecom",
+        bot_identity_key="wecom:primary",
+        config=config or {},
+    )
 
 
 @pytest.mark.asyncio()
@@ -653,3 +667,513 @@ async def test_wecom_ws_reply_node_relays_via_backend_when_no_local_client(
     assert len(captured_requests) == 1
     assert "/api/internal/listeners/wecom/reply" in str(captured_requests[0].url)
     assert b"Hello via relay" in captured_requests[0].content
+
+
+def test_wecom_helper_functions_and_registry() -> None:
+    """Helper functions should normalize previews and registry lookups."""
+    wecom_plugin = _load_wecom_plugin_module()
+    loop = asyncio.new_event_loop()
+
+    try:
+        assert wecom_plugin._optional_string(None) is None
+        assert wecom_plugin._optional_string("  hello  ") == "hello"
+        assert (
+            wecom_plugin._handle_wecom_text_preview({"text": "  inline text  "})
+            == "inline text"
+        )
+        assert (
+            wecom_plugin._handle_wecom_voice_preview(
+                {"voice": {"content": "  voice preview  "}}
+            )
+            == "voice preview"
+        )
+        assert wecom_plugin._handle_wecom_voice_preview({"voice": {}}) == "[Voice]"
+        assert wecom_plugin._handle_wecom_voice_preview({"voice": "raw"}) == "[Voice]"
+        assert wecom_plugin._handle_wecom_file_preview({"file": {}}) == "[File]"
+        assert wecom_plugin._handle_wecom_file_preview({"file": "raw"}) == "[File]"
+        assert wecom_plugin._handle_wecom_image_preview({}) == "[Image]"
+        assert wecom_plugin._handle_wecom_mixed_preview({}) == "[Mixed]"
+
+        subscription_id = str(uuid4())
+        client = object()
+        wecom_plugin.register_wecom_client(subscription_id, client, loop)
+        assert wecom_plugin.get_wecom_client(subscription_id) == (client, loop)
+        wecom_plugin.deregister_wecom_client(subscription_id)
+        assert wecom_plugin.get_wecom_client(subscription_id) is None
+
+        assert (
+            wecom_plugin.get_wecom_long_connection_block_reason(
+                {"bot_id": "bot", "bot_secret": ""}
+            )
+            == "WeCom bot_secret is missing in listener configuration."
+        )
+        assert (
+            wecom_plugin.get_wecom_long_connection_block_reason(
+                {"bot_id": "bot", "bot_secret": "secret"}
+            )
+            is None
+        )
+    finally:
+        loop.close()
+
+
+def test_normalize_wecom_test_event_group_message() -> None:
+    """Fixture normalization should support group-chat fixture events."""
+    wecom_plugin = _load_wecom_plugin_module()
+    subscription = _build_subscription()
+
+    payload = wecom_plugin.normalize_wecom_test_event(
+        subscription,
+        {
+            "conversation_id": "chat-001",
+            "external_userid": "external-123",
+            "username": "chat-alias",
+        },
+        index=7,
+    )
+
+    assert payload.event_type == "message"
+    assert payload.message.text == "hello from wecom"
+    assert payload.message.chat_type == "group"
+    assert payload.message.chat_id == "chat-001"
+    assert payload.message.user_id is None
+    assert payload.message.username == "chat-alias"
+    assert payload.reply_target["chat_id"] == "chat-001"
+    assert payload.reply_target["to_user"] is None
+    assert payload.dedupe_key.endswith(":7:chat-001")
+
+
+def test_wecom_ws_event_normalization_uses_hash_fallback_for_voice_frames() -> None:
+    """Voice frames without ids should hash the frame for dedupe."""
+    wecom_plugin = _load_wecom_plugin_module()
+    subscription = _build_subscription(
+        config={
+            "bot_id": "aib-test-bot",
+            "bot_secret": "test-secret",
+        }
+    )
+
+    payload = wecom_plugin.normalize_wecom_ws_event(
+        subscription,
+        {
+            "headers": {},
+            "body": {
+                "voice": {"content": "  spoken words  "},
+            },
+        },
+    )
+
+    assert payload is not None
+    assert payload.event_type == "message"
+    assert payload.message.text == "spoken words"
+    assert ":wecom:hash:message:" in payload.dedupe_key
+
+
+def test_wecom_ws_event_normalization_ignores_unhandled_message_shape() -> None:
+    """Frames with no supported message body should be ignored."""
+    wecom_plugin = _load_wecom_plugin_module()
+    subscription = _build_subscription()
+
+    payload = wecom_plugin.normalize_wecom_ws_event(
+        subscription,
+        {
+            "headers": {},
+            "body": {
+                "unsupported": {"value": "ignored"},
+            },
+        },
+    )
+
+    assert payload is None
+
+
+@pytest.mark.asyncio()
+async def test_wecom_ws_reply_node_backend_error_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backend relay failures should raise a descriptive runtime error."""
+    wecom_plugin = _load_wecom_plugin_module()
+
+    monkeypatch.setenv("ORCHEO_BACKEND_INTERNAL_URL", "http://test-backend:9999")
+
+    import httpx
+
+    captured_payloads: list[dict[str, object]] = []
+
+    async def mock_post(
+        self: object, url: str, *, json: dict[str, object]
+    ) -> httpx.Response:
+        del self
+        assert url.endswith("/api/internal/listeners/wecom/reply")
+        captured_payloads.append(json)
+        return httpx.Response(502, text="bad gateway")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+
+    node = wecom_plugin.WeComWsReplyNode(
+        name="test_reply",
+        message="Hello via relay",
+        raw_event="not-a-dict",
+        subscription_id="missing-sub-id",
+    )
+
+    with pytest.raises(RuntimeError, match="HTTP 502"):
+        await node.run({}, {})
+
+    assert captured_payloads == [
+        {
+            "subscription_id": "missing-sub-id",
+            "message": "Hello via relay",
+            "raw_event": {},
+        }
+    ]
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_run_fixture_mode_direct_module() -> None:
+    """Direct adapter runs should dispatch fixture events from source tests."""
+    wecom_plugin = _load_wecom_plugin_module()
+    repository = RecordingListenerRepository()
+    subscription = _build_subscription(config={"test_events": ["plain text event"]})
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=repository,
+        subscription=subscription,
+        runtime_id="fixture-runtime",
+    )
+
+    stop_event = asyncio.Event()
+    task = asyncio.create_task(adapter.run(stop_event))
+
+    for _ in range(20):
+        if repository.events:
+            break
+        await asyncio.sleep(0)
+
+    assert len(repository.events) == 1
+    assert repository.events[0][1].message.text == "plain text event"
+
+    stop_event.set()
+    await task
+    assert adapter.health().status == "stopped"
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_fixture_mode_honors_pre_set_stop() -> None:
+    """Fixture mode should stop before dispatching when already cancelled."""
+    wecom_plugin = _load_wecom_plugin_module()
+    repository = RecordingListenerRepository()
+    subscription = _build_subscription(config={"test_events": [{"text": "ignored"}]})
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=repository,
+        subscription=subscription,
+        runtime_id="fixture-runtime",
+    )
+
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await adapter._run_fixture_mode(
+        events=[{"text": "ignored"}],
+        stop_event=stop_event,
+    )
+
+    assert repository.events == []
+    assert adapter.health().status == "stopped"
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_monitor_loop_exits_when_already_stopped() -> None:
+    """The monitor loop should exit immediately when stop is already set."""
+    wecom_plugin = _load_wecom_plugin_module()
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=RecordingListenerRepository(),
+        subscription=_build_subscription(),
+        runtime_id="monitor-runtime",
+    )
+    stop_event = asyncio.Event()
+    stop_event.set()
+
+    await adapter._run_websocket_monitor_loop(stop_event)
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_monitor_loop_resets_disconnect_timer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The monitor loop should clear disconnect tracking after reconnect."""
+    wecom_plugin = _load_wecom_plugin_module()
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=RecordingListenerRepository(),
+        subscription=_build_subscription(),
+        runtime_id="monitor-runtime",
+    )
+
+    class FakeSdkClient:
+        def __init__(self) -> None:
+            self._states = iter([False, True])
+
+        @property
+        def is_connected(self) -> bool:
+            return next(self._states, True)
+
+    class FakeLoop:
+        def __init__(self) -> None:
+            self._times = iter([1.0])
+
+        def time(self) -> float:
+            return next(self._times, 1.0)
+
+    stop_event = asyncio.Event()
+    adapter._sdk_client = FakeSdkClient()
+    fake_loop = FakeLoop()
+    wait_calls = {"count": 0}
+
+    async def fake_wait_for(awaitable: object, timeout: float) -> object:
+        del timeout
+        if wait_calls["count"] < 2:
+            wait_calls["count"] += 1
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise TimeoutError
+        stop_event.set()
+        return await awaitable
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: fake_loop)
+
+    await adapter._run_websocket_monitor_loop(stop_event)
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_monitor_loop_raises_after_long_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The monitor loop should fail once the disconnect window is too long."""
+    wecom_plugin = _load_wecom_plugin_module()
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=RecordingListenerRepository(),
+        subscription=_build_subscription(),
+        runtime_id="monitor-runtime",
+    )
+    adapter._sdk_client = type("FakeSdkClient", (), {"is_connected": False})()
+
+    class FakeLoop:
+        def __init__(self) -> None:
+            self._times = iter([0.0, 301.0])
+
+        def time(self) -> float:
+            return next(self._times, 301.0)
+
+    async def fake_wait_for(awaitable: object, timeout: float) -> object:
+        del timeout
+        if hasattr(awaitable, "close"):
+            awaitable.close()
+        raise TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    fake_loop = FakeLoop()
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: fake_loop)
+
+    with pytest.raises(RuntimeError, match="down for over 5 minutes"):
+        await adapter._run_websocket_monitor_loop(asyncio.Event())
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_monitor_loop_tolerates_short_disconnects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The monitor loop should keep waiting while the disconnect is still recent."""
+    wecom_plugin = _load_wecom_plugin_module()
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=RecordingListenerRepository(),
+        subscription=_build_subscription(),
+        runtime_id="monitor-runtime",
+    )
+    adapter._sdk_client = type("FakeSdkClient", (), {"is_connected": False})()
+
+    class FakeLoop:
+        def __init__(self) -> None:
+            self._times = iter([0.0, 200.0])
+
+        def time(self) -> float:
+            return next(self._times, 200.0)
+
+    stop_event = asyncio.Event()
+    wait_calls = {"count": 0}
+
+    async def fake_wait_for(awaitable: object, timeout: float) -> object:
+        del timeout
+        if wait_calls["count"] < 2:
+            wait_calls["count"] += 1
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise TimeoutError
+        stop_event.set()
+        return await awaitable
+
+    fake_loop = FakeLoop()
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: fake_loop)
+
+    await adapter._run_websocket_monitor_loop(stop_event)
+
+
+@pytest.mark.asyncio()
+async def test_wecom_websocket_connection_marks_error_on_connect_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connection failures should set adapter health to error and clean up."""
+    wecom_plugin = _load_wecom_plugin_module()
+    local_shared_loop = wecom_plugin._SharedWeComSdkLoop()
+    monkeypatch.setattr(wecom_plugin, "_SHARED_WECOM_SDK_LOOP", local_shared_loop)
+    monkeypatch.setattr(
+        wecom_plugin,
+        "get_wecom_long_connection_block_reason",
+        lambda _config: None,
+    )
+
+    disconnect_calls: list[str] = []
+
+    class FakeWSClient:
+        def __init__(
+            self, *, bot_id: str, secret: str, max_reconnect_attempts: int = 0
+        ) -> None:
+            del bot_id, secret, max_reconnect_attempts
+            self._handlers: dict[str, object] = {}
+
+        def on(self, event_type: str, handler: object) -> None:
+            self._handlers[event_type] = handler
+
+        async def connect(self) -> None:
+            raise RuntimeError("connect boom")
+
+        async def disconnect(self) -> None:
+            disconnect_calls.append("disconnect")
+
+    sdk_module = ModuleType("wecom_aibot_sdk")
+    sdk_module.WSClient = FakeWSClient  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "wecom_aibot_sdk", sdk_module)
+
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=RecordingListenerRepository(),
+        subscription=_build_subscription(
+            config={
+                "bot_id": "aib-test-bot",
+                "bot_secret": "test-secret",
+            }
+        ),
+        runtime_id="wecom-runtime",
+    )
+
+    with pytest.raises(RuntimeError, match="connect boom"):
+        await adapter._run_websocket_connection(asyncio.Event())
+
+    assert adapter.health().status == "error"
+    assert adapter.health().detail == "connect boom"
+    assert disconnect_calls == ["disconnect"]
+    assert wecom_plugin.get_wecom_client(str(adapter.subscription.id)) is None
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_short_circuits_unhandled_frames() -> None:
+    """Adapter event handling should no-op without a loop or payload."""
+    wecom_plugin = _load_wecom_plugin_module()
+    repository = RecordingListenerRepository()
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=repository,
+        subscription=_build_subscription(),
+        runtime_id="wecom-runtime",
+    )
+
+    adapter._handle_ws_event({"body": {"text": {"content": "ignored"}}})
+    assert repository.events == []
+
+    adapter._dispatch_loop = asyncio.get_running_loop()
+    adapter._handle_ws_event({"body": {"unsupported": "ignored"}})
+    assert repository.events == []
+
+    adapter._sdk_client = object()
+    adapter._sdk_loop = None
+    adapter._stop_ws_client()
+
+
+def test_shared_wecom_sdk_loop_release_and_shutdown_lifecycle() -> None:
+    """The shared SDK loop should handle ref-counting and pending tasks."""
+    wecom_plugin = _load_wecom_plugin_module()
+    shared_loop = wecom_plugin._SharedWeComSdkLoop()
+
+    loop = shared_loop.acquire()
+    assert shared_loop.acquire() is loop
+
+    started = threading.Event()
+
+    async def pending_task() -> None:
+        started.set()
+        await asyncio.Future()
+
+    asyncio.run_coroutine_threadsafe(pending_task(), loop)
+    assert started.wait(timeout=1) is True
+
+    shared_loop.release()
+    assert shared_loop._loop is loop
+
+    shared_loop.release()
+    assert shared_loop._loop is None
+
+    shared_loop.release()
+
+    other_loop = shared_loop.acquire()
+    assert other_loop is not None
+    shared_loop.shutdown()
+    assert shared_loop._loop is None
+
+
+def test_shared_wecom_sdk_loop_handles_stale_loop_reference() -> None:
+    """The loop thread should exit even if the stored loop reference changed."""
+    wecom_plugin = _load_wecom_plugin_module()
+    shared_loop = wecom_plugin._SharedWeComSdkLoop()
+    loop = shared_loop.acquire()
+    thread = shared_loop._thread
+    assert thread is not None
+
+    with shared_loop._lock:
+        shared_loop._loop = None
+
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+    assert thread.is_alive() is False
+
+
+def test_wecom_plugin_registers_nodes_and_listener_factory() -> None:
+    """Plugin registration should expose both nodes and the listener factory."""
+    wecom_plugin = _load_wecom_plugin_module()
+    registered_nodes: list[tuple[object, object]] = []
+    registered_listeners: list[tuple[object, object, object]] = []
+
+    class FakeAPI:
+        def register_node(self, metadata: object, node: object) -> None:
+            registered_nodes.append((metadata, node))
+
+        def register_listener(
+            self, metadata: object, compiler: object, factory: object
+        ) -> None:
+            registered_listeners.append((metadata, compiler, factory))
+
+    api = FakeAPI()
+    wecom_plugin.WeComListenerPlugin().register(api)
+
+    assert [metadata.name for metadata, _node in registered_nodes] == [
+        "WeComListenerPluginNode",
+        "WeComWsReplyNode",
+    ]
+    assert [metadata.id for metadata, _compiler, _factory in registered_listeners] == [
+        "wecom"
+    ]
+
+    _metadata, _compiler, factory = registered_listeners[0]
+    adapter = factory(
+        repository=RecordingListenerRepository(),
+        subscription=_build_subscription(),
+        runtime_id="runtime-1",
+    )
+    assert isinstance(adapter, wecom_plugin.WeComListenerAdapter)
