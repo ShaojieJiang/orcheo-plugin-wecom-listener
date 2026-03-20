@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import threading
@@ -218,7 +220,7 @@ def _extract_frame_text(frame: Mapping[str, Any]) -> str | None:
     body = frame.get("body")
     if not isinstance(body, Mapping):
         return None
-    msg_type = str(frame.get("msgtype", "")).strip().lower()
+    msg_type = _derive_wecom_ws_message_type(frame, body)
     if not msg_type:
         for key in ("text", "image", "voice", "file", "mixed"):
             if key in body:
@@ -228,6 +230,47 @@ def _extract_frame_text(frame: Mapping[str, Any]) -> str | None:
     if handler is None:
         return None
     return handler(body)
+
+
+def _derive_wecom_ws_message_type(
+    frame: Mapping[str, Any],
+    body: Mapping[str, Any],
+) -> str:
+    """Return the normalized WeCom message type from a websocket frame."""
+    return (
+        _optional_string(body.get("msgtype"))
+        or _optional_string(frame.get("msgtype"))
+        or ""
+    ).lower()
+
+
+def _derive_wecom_ws_dedupe_source(
+    frame: Mapping[str, Any],
+    body: Mapping[str, Any],
+    *,
+    msg_type: str,
+) -> str:
+    """Return the best-available unique event key for listener dedupe."""
+    msg_id = _optional_string(body.get("msg_id") or body.get("msgid"))
+    if msg_id is not None:
+        return f"msg:{msg_id}"
+
+    headers = frame.get("headers")
+    if isinstance(headers, Mapping):
+        req_id = _optional_string(headers.get("req_id"))
+        if req_id is not None:
+            return f"req:{req_id}"
+
+    frame_hash = hashlib.sha1(
+        json.dumps(
+            frame,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    return f"hash:{msg_type}:{frame_hash}"
 
 
 def normalize_wecom_test_event(
@@ -282,12 +325,18 @@ def normalize_wecom_ws_event(
         return None
 
     body = frame.get("body") or {}
-    msg_type = str(frame.get("msgtype", "message")).strip().lower()
+    if not isinstance(body, Mapping):
+        body = {}
+    msg_type = _derive_wecom_ws_message_type(frame, body) or "message"
     from_user = _optional_string(body.get("from", {}).get("user_id")) or "wecom-user"
     chat_id = _optional_string(body.get("chat_id"))
     to_user = None if chat_id else from_user
-    msg_id = _optional_string(body.get("msg_id"))
-    dedupe_source = msg_id or f"{from_user}:{chat_id or from_user}:{msg_type}"
+    msg_id = _optional_string(body.get("msg_id") or body.get("msgid"))
+    dedupe_source = _derive_wecom_ws_dedupe_source(
+        frame,
+        body,
+        msg_type=msg_type,
+    )
 
     return ListenerDispatchPayload(
         platform="wecom",

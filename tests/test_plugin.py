@@ -52,6 +52,24 @@ class RecordingListenerRepository:
         return {"subscription_id": str(subscription_id)}
 
 
+class DedupeRecordingListenerRepository(RecordingListenerRepository):
+    """Repository stub that suppresses duplicate dedupe keys."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._seen_dedupe_keys: set[str] = set()
+
+    async def dispatch_listener_event(
+        self, subscription_id: object, payload: object
+    ) -> object:
+        dedupe_key = getattr(payload, "dedupe_key", None)
+        if isinstance(dedupe_key, str):
+            if dedupe_key in self._seen_dedupe_keys:
+                return None
+            self._seen_dedupe_keys.add(dedupe_key)
+        return await super().dispatch_listener_event(subscription_id, payload)
+
+
 def _load_wecom_plugin_module() -> ModuleType:
     module_name = "test_orcheo_plugin_wecom_listener"
     module_path = WECOM_PLUGIN_SRC / "orcheo_plugin_wecom_listener" / "__init__.py"
@@ -242,8 +260,10 @@ def test_wecom_ws_event_normalization() -> None:
     )
 
     frame = {
-        "msgtype": "text",
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "callback-001"},
         "body": {
+            "msgtype": "text",
             "from": {"user_id": "user-789"},
             "chat_id": "chat-abc",
             "msg_id": "msg-001",
@@ -258,11 +278,100 @@ def test_wecom_ws_event_normalization() -> None:
     assert payload.message.user_id == "user-789"
     assert payload.message.message_id == "msg-001"
     assert payload.message.chat_id == "chat-abc"
+    assert payload.dedupe_key.endswith("msg:msg-001")
     assert payload.message.chat_type == "group"
     assert "corp_id" not in payload.reply_target
     assert payload.reply_target["chat_id"] == "chat-abc"
     assert payload.reply_target["to_user"] is None
     assert payload.metadata["transport"] == "websocket"
+
+
+def test_wecom_ws_event_normalization_uses_req_id_when_msg_id_missing() -> None:
+    """Frames without msg_id should dedupe by the callback req_id."""
+    wecom_plugin = _load_wecom_plugin_module()
+
+    subscription = ListenerSubscription(
+        workflow_id=uuid4(),
+        workflow_version_id=uuid4(),
+        node_name="wecom_listener",
+        platform="wecom",
+        bot_identity_key="wecom:primary",
+        config={
+            "bot_id": "aib-test-bot",
+            "bot_secret": "test-secret",
+        },
+    )
+
+    frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "callback-002"},
+        "body": {
+            "msgtype": "text",
+            "from": {"user_id": "user-789"},
+            "chat_id": "chat-abc",
+            "text": {"content": "follow-up"},
+        },
+    }
+    payload = wecom_plugin.normalize_wecom_ws_event(subscription, frame)
+
+    assert payload is not None
+    assert payload.event_type == "text"
+    assert payload.dedupe_key.endswith("req:callback-002")
+
+
+@pytest.mark.asyncio()
+async def test_wecom_adapter_dispatches_follow_ups_without_msg_id() -> None:
+    """Follow-up frames without msg_id should not collapse into one dedupe bucket."""
+    wecom_plugin = _load_wecom_plugin_module()
+    subscription = ListenerSubscription(
+        workflow_id=uuid4(),
+        workflow_version_id=uuid4(),
+        node_name="wecom_listener",
+        platform="wecom",
+        bot_identity_key="wecom:primary",
+        config={
+            "bot_id": "aib-test-bot",
+            "bot_secret": "test-secret",
+        },
+    )
+    repository = DedupeRecordingListenerRepository()
+    adapter = wecom_plugin.WeComListenerAdapter(
+        repository=repository,
+        subscription=subscription,
+        runtime_id="wecom-runtime",
+    )
+    adapter._dispatch_loop = asyncio.get_running_loop()
+
+    first_frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "callback-100"},
+        "body": {
+            "msgtype": "text",
+            "from": {"user_id": "user-789"},
+            "chat_id": "chat-abc",
+            "text": {"content": "first"},
+        },
+    }
+    second_frame = {
+        "cmd": "aibot_msg_callback",
+        "headers": {"req_id": "callback-101"},
+        "body": {
+            "msgtype": "text",
+            "from": {"user_id": "user-789"},
+            "chat_id": "chat-abc",
+            "text": {"content": "second"},
+        },
+    }
+
+    await asyncio.to_thread(adapter._handle_ws_event, first_frame)
+    await asyncio.to_thread(adapter._handle_ws_event, second_frame)
+
+    assert len(repository.events) == 2
+    first_payload = repository.events[0][1]
+    second_payload = repository.events[1][1]
+    assert first_payload.dedupe_key != second_payload.dedupe_key
+    assert first_payload.message.text == "first"
+    assert second_payload.message.text == "second"
 
 
 def test_wecom_ws_event_normalization_private_message() -> None:

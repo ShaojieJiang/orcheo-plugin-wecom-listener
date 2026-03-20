@@ -23,12 +23,6 @@ workflow that subscribes to the `wecom` listener platform.
 ## Installation
 
 ```bash
-orcheo plugin install orcheo-plugin-wecom-listener
-```
-
-Or from source:
-
-```bash
 orcheo plugin install git+https://github.com/ShaojieJiang/orcheo-plugin-wecom-listener.git
 ```
 
@@ -63,8 +57,8 @@ how to normalize events from multiple platforms before processing.
 Install both plugins before importing the template:
 
 ```bash
-orcheo plugin install orcheo-plugin-wecom-listener
-orcheo plugin install orcheo-plugin-lark-listener
+orcheo plugin install git+https://github.com/ShaojieJiang/orcheo-plugin-wecom-listener.git
+orcheo plugin install git+https://github.com/ShaojieJiang/orcheo-plugin-lark-listener.git
 ```
 
 ## Replying to messages
