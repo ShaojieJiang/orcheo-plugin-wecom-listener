@@ -23,7 +23,7 @@ workflow that subscribes to the `wecom` listener platform.
 ## Installation
 
 ```bash
-orcheo plugin install git+https://github.com/ShaojieJiang/orcheo-plugin-wecom-listener.git
+orcheo plugin install git+https://github.com/AI-Colleagues/orcheo-plugin-wecom-listener.git
 ```
 
 After installation, restart the backend and worker processes:
@@ -57,8 +57,8 @@ how to normalize events from multiple platforms before processing.
 Install both plugins before importing the template:
 
 ```bash
-orcheo plugin install git+https://github.com/ShaojieJiang/orcheo-plugin-wecom-listener.git
-orcheo plugin install git+https://github.com/ShaojieJiang/orcheo-plugin-lark-listener.git
+orcheo plugin install git+https://github.com/AI-Colleagues/orcheo-plugin-wecom-listener.git
+orcheo plugin install git+https://github.com/AI-Colleagues/orcheo-plugin-lark-listener.git
 ```
 
 ## Replying to messages
@@ -71,7 +71,7 @@ HTTP endpoint automatically.
 ## Development
 
 ```bash
-git clone https://github.com/ShaojieJiang/orcheo-plugin-wecom-listener
+git clone https://github.com/AI-Colleagues/orcheo-plugin-wecom-listener
 cd orcheo-plugin-wecom-listener
 uv venv && uv pip install -e ".[dev]"
 uv run pytest
@@ -81,5 +81,5 @@ uv run pytest
 
 - [Plugin Reference](https://orcheo.readthedocs.io/custom_nodes_and_tools/) — listener plugin contract
 - [CLI Reference](https://orcheo.readthedocs.io/cli_reference/) — `orcheo plugin` commands
-- [orcheo-plugin-lark-listener](https://github.com/ShaojieJiang/orcheo-plugin-lark-listener) — companion Lark plugin
-- [orcheo-plugin-template](https://github.com/ShaojieJiang/orcheo-plugin-template) — starter template for building your own plugin
+- [orcheo-plugin-lark-listener](https://github.com/AI-Colleagues/orcheo-plugin-lark-listener) — companion Lark plugin
+- [orcheo-plugin-template](https://github.com/AI-Colleagues/orcheo-plugin-template) — starter template for building your own plugin
